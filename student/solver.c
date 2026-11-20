@@ -1,5 +1,5 @@
 /*
- * solver.c - Team T32 - robot name: chinatown 
+ * solver.c - Team T32 - robot name: chinatown
  * WEEK 3 - week 2 + explore to goal, return home, speed run
  */
 #include "mouse_hal.h"
