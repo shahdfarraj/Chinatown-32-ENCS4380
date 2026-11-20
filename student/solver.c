@@ -1,10 +1,11 @@
 /*
  * solver.c - Team T32 - robot name: chinatown
- * WEEK 1 - map and position (wall follower used only to test it)
+ * WEEK 2 - week 1 + flood fill (distances shown in the cells)
  */
 #include "mouse_hal.h"
 #include <stdio.h>
 
+#define UNSEEN      0xFFFFu   /* "no distance yet" marker                    */
 #define WANDER_STEPS 100      /* how many steps the test walk takes          */
 
 /* ---- State -------------------------------------------------------------- */
@@ -12,6 +13,7 @@
 static mm_maze_t maze;                                  /* size and goal      */
 static uint8_t   walls[MM_MAX_SIZE][MM_MAX_SIZE];       /* walls we believe   */
 static uint8_t   known[MM_MAX_SIZE][MM_MAX_SIZE];       /* sides we observed  */
+static uint16_t  dist[MM_MAX_SIZE][MM_MAX_SIZE];        /* flood-fill numbers */
 static int px, py, heading;                             /* where the mouse is */
 
 /* One step in each absolute direction: N, E, S, W (y grows to the north). */
@@ -47,6 +49,7 @@ static void init_map(void)
         for (int y = 0; y < MM_MAX_SIZE; y++) {
             walls[x][y] = 0;
             known[x][y] = 0;
+            dist[x][y]  = UNSEEN;
         }
     for (int x = 0; x < maze.width; x++) {
         set_side(x, 0, MM_SOUTH, true);
@@ -102,14 +105,75 @@ static mm_status_t step(void)
     return st;
 }
 
-/* ---- Test walk (week 1 only) --------------------------------------------- */
+/* ---- Step 2: flood fill ------------------------------------------------- */
 
-/* Left-hand wall follower. It only exists to move the mouse around so you can
- * check that the map and the position tracking are right. */
+/*
+ * Give every cell its distance to the target block (x0,y0)-(x1,y1) with a
+ * queue (breadth-first search, no recursion).
+ *   optimistic = true : sides we have not seen are treated as open
+ *   optimistic = false: only sides we know are open are used ("known path")
+ */
+static void flood(int x0, int y0, int x1, int y1, bool optimistic)
+{
+    static uint8_t qx[MM_MAX_SIZE * MM_MAX_SIZE];
+    static uint8_t qy[MM_MAX_SIZE * MM_MAX_SIZE];
+    int head = 0, tail = 0;
+
+    for (int x = 0; x < maze.width; x++)
+        for (int y = 0; y < maze.height; y++) dist[x][y] = UNSEEN;
+
+    for (int x = x0; x <= x1; x++)
+        for (int y = y0; y <= y1; y++) {
+            dist[x][y] = 0;
+            qx[tail] = (uint8_t)x;
+            qy[tail] = (uint8_t)y;
+            tail++;
+        }
+
+    while (head < tail) {
+        int cx = qx[head], cy = qy[head];
+        head++;
+        for (int d = 0; d < 4; d++) {
+            uint8_t b = MM_WALL(d);
+            if (walls[cx][cy] & b) continue;                 /* wall          */
+            if (!optimistic && !(known[cx][cy] & b)) continue;
+            int nx = cx + DX[d], ny = cy + DY[d];
+            if (!in_maze(nx, ny)) continue;
+            if (dist[nx][ny] != UNSEEN) continue;            /* already done  */
+            dist[nx][ny] = (uint16_t)(dist[cx][cy] + 1);
+            qx[tail] = (uint8_t)nx;
+            qy[tail] = (uint8_t)ny;
+            tail++;
+        }
+    }
+}
+
+/* Write the distance of every reached cell on the simulator maze. */
+static void show_distances(void)
+{
+    char text[12];
+    for (int x = 0; x < maze.width; x++)
+        for (int y = 0; y < maze.height; y++)
+            if (dist[x][y] != UNSEEN) {
+                snprintf(text, sizeof text, "%u", (unsigned)dist[x][y]);
+                mm_label(x, y, text);
+            }
+}
+
+/* ---- Test walk (weeks 1-2 only) ------------------------------------------ */
+
+/* Left-hand wall follower. It only moves the mouse around so the map fills
+ * up. After every step the distances to the goal are recalculated and shown,
+ * so you can watch the numbers change when a new wall is found. */
 static void wander(int steps)
 {
     for (int n = 0; n < steps; n++) {
         uint8_t s = sense_here();
+
+        /* Week 2: flood fill from the goal, show the numbers */
+        flood(maze.goal_x0, maze.goal_y0, maze.goal_x1, maze.goal_y1, true);
+        show_distances();
+
         int d;
         if      (!(s & MM_SEE_LEFT))  d = (heading + 3) & 3;
         else if (!(s & MM_SEE_FRONT)) d = heading;
@@ -118,7 +182,7 @@ static void wander(int steps)
 
         if (face(d) != MM_OK) return;
         if (step() != MM_OK) return;
-        mm_mark(px, py, MM_COLOR_GREEN);     /* green = where WE think we are */
+        mm_mark(px, py, MM_COLOR_GREEN);
     }
 }
 
