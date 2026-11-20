@@ -1,12 +1,13 @@
 /*
- * solver.c - Team T32 - robot name: chinatown
- * WEEK 2 - week 1 + flood fill (distances shown in the cells)
+ * solver.c - Team T32 - robot name: chinatown 
+ * WEEK 3 - week 2 + explore to goal, return home, speed run
  */
 #include "mouse_hal.h"
 #include <stdio.h>
 
 #define UNSEEN      0xFFFFu   /* "no distance yet" marker                    */
-#define WANDER_STEPS 100      /* how many steps the test walk takes          */
+#define MAX_STEPS   5000      /* safety limit per phase                      */
+#define SHOW_DIST   1         /* 1 = write flood-fill numbers in the cells   */
 
 /* ---- State -------------------------------------------------------------- */
 
@@ -160,30 +161,57 @@ static void show_distances(void)
             }
 }
 
-/* ---- Test walk (weeks 1-2 only) ------------------------------------------ */
+/* ---- Step 3: explore, return, race -------------------------------------- */
 
-/* Left-hand wall follower. It only moves the mouse around so the map fills
- * up. After every step the distances to the goal are recalculated and shown,
- * so you can watch the numbers change when a new wall is found. */
-static void wander(int steps)
+/* Open neighbour with the smallest distance; prefers going straight. */
+static int best_dir(bool optimistic)
 {
-    for (int n = 0; n < steps; n++) {
-        uint8_t s = sense_here();
-
-        /* Week 2: flood fill from the goal, show the numbers */
-        flood(maze.goal_x0, maze.goal_y0, maze.goal_x1, maze.goal_y1, true);
-        show_distances();
-
-        int d;
-        if      (!(s & MM_SEE_LEFT))  d = (heading + 3) & 3;
-        else if (!(s & MM_SEE_FRONT)) d = heading;
-        else if (!(s & MM_SEE_RIGHT)) d = (heading + 1) & 3;
-        else                          d = (heading + 2) & 3;
-
-        if (face(d) != MM_OK) return;
-        if (step() != MM_OK) return;
-        mm_mark(px, py, MM_COLOR_GREEN);
+    static const int order[4] = { 0, 1, 3, 2 };   /* front, right, left, back */
+    int best = -1;
+    uint16_t best_d = dist[px][py];
+    for (int k = 0; k < 4; k++) {
+        int d = (heading + order[k]) & 3;
+        uint8_t b = MM_WALL(d);
+        if (walls[px][py] & b) continue;
+        if (!optimistic && !(known[px][py] & b)) continue;
+        int nx = px + DX[d], ny = py + DY[d];
+        if (!in_maze(nx, ny)) continue;
+        if (dist[nx][ny] < best_d) { best_d = dist[nx][ny]; best = d; }
     }
+    return best;
+}
+
+/*
+ * Drive to the block (x0,y0)-(x1,y1).
+ *   explore = true : sense walls at every cell and re-flood (exploring)
+ *   explore = false: follow the shortest KNOWN path, no exploring
+ * Returns true when the target is reached.
+ */
+static bool go_to(int x0, int y0, int x1, int y1, bool explore)
+{
+    for (int n = 0; n < MAX_STEPS; n++) {
+        if (mm_reset_requested()) {          /* operator touched the mouse:  */
+            px = 0; py = 0; heading = MM_NORTH;   /* position resets, map stays */
+            mm_reset_done();
+        }
+        if (px >= x0 && px <= x1 && py >= y0 && py <= y1) return true;
+
+        if (explore) sense_here();
+        flood(x0, y0, x1, y1, explore);
+#if SHOW_DIST
+        show_distances();
+#endif
+        if (dist[px][py] == UNSEEN) {
+            mm_log("no path to target from (%d,%d)", px, py);
+            return false;
+        }
+        int d = best_dir(explore);
+        if (d < 0) return false;
+        if (face(d) != MM_OK) return false;
+        if (step() == MM_FAULT) return false;
+    }
+    mm_log("step limit reached");
+    return false;
 }
 
 /* ---- Entry point -------------------------------------------------------- */
@@ -198,6 +226,22 @@ void solver_run(void)
     init_map();
     px = 0; py = 0; heading = MM_NORTH;    /* start: (0,0) facing north      */
 
-    wander(WANDER_STEPS);
-    mm_log("tracked position: (%d,%d) heading %d", px, py, heading);
+    /* Phase A: explore until we reach the goal */
+    bool ok = go_to(maze.goal_x0, maze.goal_y0, maze.goal_x1, maze.goal_y1, true);
+    mm_log("phase A (explore to goal): %s, t=%lu", ok ? "ok" : "FAILED",
+           (unsigned long)mm_millis());
+
+    /* Phase B: return to the start cell */
+    if (ok) {
+        ok = go_to(0, 0, 0, 0, true);
+        mm_log("phase B (return home): %s, t=%lu", ok ? "ok" : "FAILED",
+               (unsigned long)mm_millis());
+    }
+
+    /* Phase C: speed run on the shortest known path */
+    if (ok) {
+        ok = go_to(maze.goal_x0, maze.goal_y0, maze.goal_x1, maze.goal_y1, false);
+        mm_log("phase C (speed run): %s, t=%lu", ok ? "ok" : "FAILED",
+               (unsigned long)mm_millis());
+    }
 }
